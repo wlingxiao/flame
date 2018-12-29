@@ -51,7 +51,7 @@ class SelectorLoop(
       } else if (k.isWritable) {
         val attach = k.attachment()
         if (attach != null) {
-          val (channel, buf, promise) = k.attachment().asInstanceOf[(NIO1Channel, ByteBuffer, Promise[Int])]
+          val (channel, buf, promise) = k.attachment().asInstanceOf[(NioChannel, ByteBuffer, Promise[Int])]
           write(channel, buf, promise)
         }
       }
@@ -65,7 +65,7 @@ class SelectorLoop(
     val r = try {
       val rr = channel.read(buf)
       buf.flip()
-      sc.pipeline.sendReceived(buf)
+
       rr
     } catch {
       case ignore: ClosedChannelException =>
@@ -78,7 +78,7 @@ class SelectorLoop(
     }
   }
 
-  def write(channel: NIO1Channel, buf: ByteBuffer, promise: Promise[Int]): Unit = {
+  def write(channel: NioChannel, buf: ByteBuffer, promise: Promise[Int]): Unit = {
     val remain = buf.remaining()
     val ret = channel.socket.write(buf)
     if (ret < remain) {
@@ -88,11 +88,11 @@ class SelectorLoop(
     }
   }
 
-  private def setOpWrite(channel: NIO1Channel): Unit = {
+  private def setOpWrite(channel: NioChannel): Unit = {
 
   }
 
-  private def clearOpWrite(channel: NIO1Channel): Unit = {
+  private def clearOpWrite(channel: NioChannel): Unit = {
     val key = channel.socket.keyFor(selector)
     var interestOps = SelectionKey.OP_READ | SelectionKey.OP_WRITE
     interestOps &= ~SelectionKey.OP_WRITE
@@ -113,7 +113,7 @@ class SelectorLoop(
 
   private class RegisterTask(channel: Channel) extends Runnable {
     override def run(): Unit = {
-      channel.socket.register(selector, SelectionKey.OP_READ, channel)
+      //channel.socket.register(selector, SelectionKey.OP_READ, channel)
     }
   }
 

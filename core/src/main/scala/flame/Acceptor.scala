@@ -35,11 +35,9 @@ private[flame] class Acceptor(
         if (client != null) {
           client.configureBlocking(false)
           val loop = nextLoop()
-          val pipeline = Pipeline()
-          val channel = NIO1Channel(pipeline, client, loop)
-          pipeline.channel = channel
+          val pipeline: Pipeline = ???
+          val channel = NioChannel(pipeline, client, loop)
           initializer.init(channel)
-          pipeline.sendConnected()
           loop.register(channel)
         }
       } catch {
@@ -52,7 +50,6 @@ private[flame] class Acceptor(
       }
     }
   }
-
 
   private def nextLoop(): SelectorLoop = {
     loops(Math.abs(loopIndex.getAndIncrement() % loops.length))

@@ -1,39 +1,39 @@
 package flame
 
-import java.nio.ByteBuffer
-
-import flame.logging.Logging
+import java.net.SocketAddress
 
 import scala.concurrent.{Future, Promise}
 
-
 trait Pipeline {
 
-  var channel: Channel
+  def channel: Channel
 
-  def addLast(handler: Handler): Pipeline
+  def append(handler: Handler): Pipeline
 
-  def sendConnected(): Unit
+  def bind(localAddress: SocketAddress): Unit
 
-  def sendReceived(msg: Object): Unit
+  def read(): Pipeline
+
+  def fireChannelActive(): Unit
+
 }
 
-private object Pipeline {
+object Pipeline {
 
-  class Impl extends Pipeline {
+  def apply(ch: Channel): Pipeline = new Pipeline.Impl(ch)
 
-    var channel: Channel = _
+  class Impl(val channel: Channel) extends Pipeline {
 
-    private val head: AbstractHandlerContext = new HeadContext(this)
+    private val head: HeadContext = HeadContext(this)
 
-    private val tail: AbstractHandlerContext = new TailContext(this)
+    private val tail: TailContext = TailContext(this)
 
     head.next = tail
     tail.prev = head
 
-    def addLast(handler: Handler): Pipeline = {
+    override def append(handler: Handler): Pipeline = {
+      val newCtx = newContext(handler)
       val prev = tail.prev
-      val newCtx = new AbstractHandlerContextImpl(this, handler)
       newCtx.prev = prev
       newCtx.next = tail
       prev.next = newCtx
@@ -41,52 +41,128 @@ private object Pipeline {
       this
     }
 
-    def sendConnected(): Unit = {
-      head.sendConnected()
+    override def bind(localAddress: SocketAddress): Unit = {
+      tail.bind(localAddress)
     }
 
-    def sendReceived(msg: Object): Unit = {
-      head.handler.received(head, msg)
+    override def fireChannelActive(): Unit = {
+      head.apply(head, Active())
     }
 
+    private def newContext(handler: Handler): AbstractContext = {
+      ContextImpl(this, handler)
+    }
+
+    override def read(): Pipeline = {
+      tail.read()
+      this
+    }
   }
 
-  def apply(): Pipeline = {
-    new Impl
-  }
+  abstract class AbstractContext extends Context {
+    var prev: AbstractContext = _
 
-  class HeadContext(pipeline: Pipeline) extends AbstractHandlerContext(pipeline, null) with Handler {
+    var next: AbstractContext = _
 
-    override def handler: Handler = this
+    def outbound: Boolean
 
-    override def received(ctx: HandlerContext, msg: Object): Unit = {
-      ctx.sendReceived(msg)
+    def inbound: Boolean
+
+    def bind(socketAddress: SocketAddress): Future[Channel] = {
+      bind(socketAddress, Promise[Channel]())
     }
 
-    override def write(ctx: HandlerContext, msg: Object, promise: Promise[Int]): Unit = {
-      msg match {
-        case buf: ByteBuffer =>
-          val channel = ctx.channel.asInstanceOf[NIO1Channel]
-          channel.loop.write(channel, buf, promise)
-        case _ => throw new UnsupportedOperationException
+    def bind(localAddress: SocketAddress, promise: Promise[Channel]): Future[Channel] = {
+      val next = findOutbound()
+      next.handler.apply(next, Bind(localAddress))
+      promise.future
+    }
+
+    private def findOutbound(): AbstractContext = {
+      var ctx = this
+      do {
+        ctx = ctx.prev
+      } while (!ctx.outbound)
+      ctx
+    }
+
+    private def findInbound(): AbstractContext = {
+      var ctx = this
+      do {
+        ctx = ctx.next
+      } while (!ctx.inbound)
+      ctx
+    }
+
+    override def send(ev: Event): Unit = {
+      ev match {
+        case _: InboundEvent =>
+          val next = findInbound()
+          next.handler.apply(next, ev)
+        case _: OutboundEvent =>
+          val next = findOutbound()
+          next.handler.apply(next, ev)
+        case _ => throw new IllegalStateException(ev.getClass.getName)
       }
     }
 
-    override def close(ctx: HandlerContext, promise: Promise[Int]): Unit = {
-      pipeline.channel.close()
+    override def read(): Context = {
+      val next = findOutbound()
+      next.handler.apply(next, Read())
+      this
     }
   }
 
-  class TailContext(pipeline: Pipeline) extends AbstractHandlerContext(pipeline, null) with Handler with Logging {
-    override def received(ctx: HandlerContext, msg: Object): Unit = {
-      log.info(s"Discarded message $msg that reached at the tail of the  pipeline.")
+  case class HeadContext(pipeline: Pipeline) extends AbstractContext with Handler {
+
+    override def outbound: Boolean = {
+      true
     }
+
+    override def inbound: Boolean = false
 
     override def handler: Handler = this
 
-    override def close(ctx: HandlerContext, promise: Promise[Int]): Unit = {
-      ctx.close(promise)
+    override def bind(localAddress: SocketAddress): Future[Channel] = {
+      pipeline.channel.unsafe.bind(localAddress)
+      null
     }
+
+    def apply(ctx: Context, ev: Event): Unit = {
+      ev match {
+        case Bind(localAddress) =>
+          pipeline.channel.unsafe.bind(localAddress)
+        case Read() =>
+          pipeline.channel.unsafe.beginRead()
+        case Active() =>
+          ctx.send(ev)
+          channel.read()
+        case _ => ctx.send(ev)
+      }
+    }
+  }
+
+  case class TailContext(pipeline: Pipeline) extends AbstractContext with Handler {
+    override def handler: Handler = {
+      this
+    }
+
+    override def apply(ctx: Context, ev: Event): Unit = {
+      ev match {
+        case _: InboundEvent =>
+        case _ => ctx.send(ev)
+      }
+    }
+
+    override def outbound: Boolean = false
+
+    override def inbound: Boolean = true
+  }
+
+  case class ContextImpl(pipeline: Pipeline.Impl, handler: Handler) extends AbstractContext {
+    override def outbound: Boolean = false
+
+    override def inbound: Boolean = true
   }
 
 }

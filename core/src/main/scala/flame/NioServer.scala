@@ -7,7 +7,7 @@ import java.util.concurrent.{ExecutorService, Executors, ThreadFactory}
 
 import flame.logging.Logging
 
-class NIO1Server(
+class NioServer(
                   executor: ExecutorService,
                   initializer: Initializer,
                   poolSize: Int,
@@ -45,10 +45,10 @@ class NIO1Server(
 
 }
 
-object NIO1Server {
+object NioServer {
 
-  def apply(initializer: Initializer): NIO1Server = {
-    new NIO1Server(Executors.newFixedThreadPool(DefaultPoolSize, new ThreadFactory {
+  def apply(initializer: Initializer): NioServer = {
+    new NioServer(Executors.newFixedThreadPool(DefaultPoolSize, new ThreadFactory {
       private[this] val next = new AtomicInteger(0)
 
       override def newThread(r: Runnable): Thread = {
