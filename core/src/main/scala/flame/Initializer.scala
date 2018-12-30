@@ -6,7 +6,8 @@ trait Initializer extends Handler {
     ev match {
       case HandlerAdded() =>
         init(ctx.channel)
-      case _ => ctx.send(ev)
+      case _ =>
+        ctx.send(ev)
     }
   }
 

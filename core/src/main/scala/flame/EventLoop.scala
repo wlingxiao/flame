@@ -6,6 +6,7 @@ import java.util.concurrent.{Executor, LinkedBlockingQueue}
 import java.util.{Set => JSet}
 
 import scala.annotation.tailrec
+import scala.concurrent.{Future, Promise}
 
 
 trait EventLoop extends EventExecutor with EventLoopGroup {
@@ -13,8 +14,6 @@ trait EventLoop extends EventExecutor with EventLoopGroup {
   def parent: EventLoopGroup
 
   def run(): Unit
-
-  def inEventLoop: Boolean
 }
 
 class NioEventLoop(val parent: EventLoopGroup,
@@ -31,10 +30,14 @@ class NioEventLoop(val parent: EventLoopGroup,
     this
   }
 
-  override def register(channel: Channel): Unit = {
-    channel.unsafe.register(this)
+  override def register(channel: Channel): Future[Channel] = {
+    register(channel, Promise[Channel]())
   }
 
+  override def register(channel: Channel, promise: Promise[Channel]): Future[Channel] = {
+    channel.unsafe.register(this, promise)
+    promise.future
+  }
 
   override def inEventLoop: Boolean = {
     Thread.currentThread() == thread
@@ -77,7 +80,16 @@ class NioEventLoop(val parent: EventLoopGroup,
   }
 
   private def processSelectedKeysPlain(selectedKeys: JSet[SelectionKey]): Unit = {
-    println(selectedKeys.size())
+    val it = selectedKeys.iterator()
+    while (it.hasNext) {
+      val key = it.next()
+      it.remove()
+      val serverChannel = key.attachment().asInstanceOf[Channel]
+      val readyOps = key.readyOps()
+      if ((readyOps & (SelectionKey.OP_READ | SelectionKey.OP_ACCEPT)) != 0 || readyOps == 0) {
+        serverChannel.unsafe.read()
+      }
+    }
   }
 
 }

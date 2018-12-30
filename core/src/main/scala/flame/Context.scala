@@ -14,11 +14,21 @@ trait Context {
 
   def pipeline: Pipeline
 
+  def name: String
+
+  def executor: EventExecutor
+
   def bind(socketAddress: SocketAddress): Future[Channel]
 
   def bind(socketAddress: SocketAddress, promise: Promise[Channel]): Future[Channel]
 
   def read(): Context
+
+  def write(msg: Any): Future[Channel]
+
+  def write(msg: Any, promise: Promise[Channel]): Future[Channel]
+
+  def flush(): Context
 
   def send(ev: Event): Unit
 

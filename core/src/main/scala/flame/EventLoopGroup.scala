@@ -4,12 +4,15 @@ import java.nio.channels.spi.SelectorProvider
 import java.util.concurrent.Executor
 import java.util.concurrent.atomic.AtomicInteger
 
+import scala.concurrent.{Future, Promise}
+
 trait EventLoopGroup {
 
   def next: EventLoop
 
-  def register(channel: Channel): Unit
+  def register(channel: Channel): Future[Channel]
 
+  def register(channel: Channel, promise: Promise[Channel]): Future[Channel]
 }
 
 class NioEventLoopGroup(nThreads: Int) extends EventLoopGroup {
@@ -34,8 +37,13 @@ class NioEventLoopGroup(nThreads: Int) extends EventLoopGroup {
     children(Math.abs(loopIndex.getAndIncrement() % children.length))
   }
 
-  override def register(channel: Channel): Unit = {
+  override def register(channel: Channel): Future[Channel] = {
     next.register(channel)
+  }
+
+
+  override def register(channel: Channel, promise: Promise[Channel]): Future[Channel] = {
+    next.register(channel, promise)
   }
 
   private def newChild(executor: Executor): EventLoop = {
