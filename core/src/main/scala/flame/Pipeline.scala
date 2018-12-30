@@ -181,10 +181,6 @@ object Pipeline {
 
     var next: AbstractContext = _
 
-    def outbound: Boolean
-
-    def inbound: Boolean
-
     def setAddPending(): Unit = {
       handlerState = HandlerState.AddPending
     }
@@ -204,21 +200,12 @@ object Pipeline {
     }
 
     private def findOutbound(): AbstractContext = {
-      var ctx = this
-      do {
-        ctx = ctx.prev
-      } while (!ctx.outbound)
-      ctx
+      prev
     }
 
     private def findInbound(): AbstractContext = {
-      var ctx = this
-      do {
-        ctx = ctx.next
-      } while (!ctx.inbound)
-      ctx
+      next
     }
-
 
     def deregister(): Future[Channel] = {
       val next = findOutbound()
@@ -285,12 +272,6 @@ object Pipeline {
 
     private val unsafe = pipeline.channel.unsafe
 
-    override def outbound: Boolean = {
-      true
-    }
-
-    override def inbound: Boolean = false
-
     override def handler: Handler = this
 
     def apply(ctx: Context, ev: Event): Unit = {
@@ -331,18 +312,11 @@ object Pipeline {
         case _ => ctx.send(ev)
       }
     }
-
-    override def outbound: Boolean = false
-
-    override def inbound: Boolean = true
   }
 
   case class ContextImpl(name: String,
                          pipeline: Pipeline.Impl,
                          handler: Handler) extends AbstractContext {
-    override def outbound: Boolean = false
-
-    override def inbound: Boolean = true
   }
 
 }

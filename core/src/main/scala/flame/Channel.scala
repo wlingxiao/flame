@@ -117,7 +117,9 @@ abstract class Channel(parent: Channel) {
     }
 
     def flush(): Unit = {
+      writeBuffer.flip()
       doWrite(writeBuffer)
+      writeBuffer.clear()
     }
 
     override def close(promise: Promise[Channel]): Unit = {
@@ -159,6 +161,8 @@ abstract class Channel(parent: Channel) {
 
 class NioSocketChannel(parent: Channel, ch: SocketChannel) extends Channel(null) {
 
+  private val bufferSize = 2
+
   ch.configureBlocking(false)
 
   @volatile
@@ -185,10 +189,13 @@ class NioSocketChannel(parent: Channel, ch: SocketChannel) extends Channel(null)
   def doRead(): Unit = {
     var count: Int = -1
     do {
-      val buf = ByteBuffer.allocateDirect(1024)
+      val buf = ByteBuffer.allocateDirect(bufferSize)
       count = ch.read(buf)
-      pipeline.sendChannelRead(buf)
-    } while (false)
+      if (count != -1 && count != 0) {
+        buf.flip()
+        pipeline.sendChannelRead(buf)
+      }
+    } while (count != -1 && count != 0)
     pipeline.sendChannelReadComplete()
     if (count < 0) {
       unsafe.close(Promise[Channel]())
