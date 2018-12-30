@@ -3,6 +3,7 @@ package flame
 import java.net.InetSocketAddress
 
 import scala.concurrent.Future
+import scala.util.Success
 
 class Bootstrap {
 
@@ -26,11 +27,15 @@ class Bootstrap {
   }
 
   def bind(inetHost: String, inetPort: Int): Unit = {
+    import flame.util.Executions._
     val channel = channelFactory()
     initChannel(channel)
-    group.register(channel)
-    channel.eventLoop.execute { () =>
-      channel.bind(new InetSocketAddress(inetHost, inetPort))
+    group.register(channel).onComplete {
+      case Success(ch) =>
+        ch.eventLoop.execute { () =>
+          channel.bind(new InetSocketAddress(inetHost, inetPort))
+        }
+      case _ =>
     }
   }
 
@@ -55,7 +60,7 @@ class Bootstrap {
 class ServerBootstrapAcceptor(ch: Channel, childGroup: EventLoopGroup, childHandler: Handler) extends Handler {
   def apply(ctx: Context, ev: Event): Unit = {
     ev match {
-      case ChannelRead(msg) =>
+      case In.Read(msg) =>
         val channel = msg.asInstanceOf[Channel]
         channel.pipeline.append(childHandler)
         childGroup.register(channel)

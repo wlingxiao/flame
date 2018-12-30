@@ -1,6 +1,7 @@
 package flame
 
 import java.net.SocketAddress
+import java.nio.ByteBuffer
 import java.nio.channels.{SelectableChannel, SocketChannel}
 
 import scala.collection.mutable.ArrayBuffer
@@ -21,5 +22,7 @@ private[flame] case class NioChannel(override val pipeline: Pipeline,
 
   override protected def doBind(localAddress: SocketAddress): Unit = ???
 
-  override protected def doReadMessages(buf: ArrayBuffer[Any]): Int = ???
+  override protected def doWrite(out: ByteBuffer): Unit = ???
+
+  override protected def doRead(): Unit = ???
 }

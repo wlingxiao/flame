@@ -1,7 +1,7 @@
 package flame
 
 import java.nio.channels.spi.SelectorProvider
-import java.util.concurrent.Executor
+import java.util.concurrent.{Executor, ThreadFactory}
 import java.util.concurrent.atomic.AtomicInteger
 
 import scala.concurrent.{Future, Promise}
@@ -21,11 +21,7 @@ class NioEventLoopGroup(nThreads: Int) extends EventLoopGroup {
 
   private val loopIndex = new AtomicInteger
 
-  private val executor: Executor = new Executor {
-    override def execute(command: Runnable): Unit = {
-      new Thread(command).start()
-    }
-  }
+  private val executor: Executor = new ThreadPerTaskExecutor(defaultThreadFactory)
 
   private val children = Array.fill(nThreads)(newChild(executor))
 
@@ -48,6 +44,10 @@ class NioEventLoopGroup(nThreads: Int) extends EventLoopGroup {
 
   private def newChild(executor: Executor): EventLoop = {
     new NioEventLoop(this, selectorProvider, executor)
+  }
+
+  private def defaultThreadFactory: ThreadFactory = {
+    new ThreadFactoryImpl(getClass.getSimpleName)
   }
 
 }

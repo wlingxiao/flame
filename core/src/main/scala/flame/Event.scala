@@ -6,42 +6,64 @@ import scala.concurrent.Promise
 
 sealed trait Event
 
-trait Inbound extends Event
+trait In extends Event
 
-trait Outbound extends Event
+trait Out extends Event
 
 case class HandlerAdded() extends Event
 
-/**
-  * Called once a bind operation is made.
-  */
-case class Bind(localAddress: SocketAddress, promise: Promise[Channel]) extends Outbound
+object In {
 
-/**
-  * Intercepts [[Context.read()]]
-  */
-case class Read() extends Outbound
+  /**
+    * The [[Channel]] of the [[Context]] is now active
+    */
+  case class Active() extends In
 
-/**
-  * Called once a write operation is made. The write operation will write the messages through the
-  * [[Pipeline]]. Those are then ready to be flushed to the actual [[Channel]] once
-  * [[Channel.flush]] is called
-  */
-case class Write(msg: Any, promise: Promise[Channel]) extends Outbound
+  case class Inactive() extends In
 
-case class Flush() extends Outbound
+  /**
+    * The [[Channel]] of the [[Context]] was registered with its [[EventLoop]]
+    */
+  case class Registered() extends In
 
-/**
-  * The [[Channel]] of the [[Context]] is now active
-  */
-case class Active() extends Inbound
+  case class Unregistered() extends In
 
-/**
-  * The [[Channel]] of the [[Context]] was registered with its [[EventLoop]]
-  */
-case class Registered() extends Inbound
+  /**
+    * Invoked when the current [[Channel]] has read a message from the peer.
+    */
+  case class Read(msg: Any) extends In
 
-/**
-  * Invoked when the current [[Channel]] has read a message from the peer.
-  */
-case class ChannelRead(msg: Any) extends Inbound
+  case class ReadComplete() extends In
+
+}
+
+object Out {
+
+  /**
+    * Called once a bind operation is made.
+    */
+  case class Bind(localAddress: SocketAddress, promise: Promise[Channel]) extends Out
+
+  case class Connect(remoteAddress: SocketAddress, localAddress: SocketAddress, promise: Promise[Channel]) extends Out
+
+  case class Disconnect(promise: Promise[Channel]) extends Out
+
+  case class Close(promise: Promise[Channel]) extends Out
+
+  case class Deregister(promise: Promise[Channel]) extends Out
+
+  /**
+    * Intercepts [[Context.read()]]
+    */
+  case class Read() extends Out
+
+  /**
+    * Called once a write operation is made. The write operation will write the messages through the
+    * [[Pipeline]]. Those are then ready to be flushed to the actual [[Channel]] once
+    * [[Channel.flush]] is called
+    */
+  case class Write(msg: Any, promise: Promise[Channel]) extends Out
+
+  case class Flush() extends Out
+
+}

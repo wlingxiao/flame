@@ -24,4 +24,7 @@ trait Unsafe {
     */
   def flush(): Unit
 
+  def close(promise: Promise[Channel]): Unit
+
+  def deregister(promise: Promise[Channel]): Unit
 }

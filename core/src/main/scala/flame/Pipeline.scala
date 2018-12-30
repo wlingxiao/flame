@@ -19,6 +19,8 @@ trait Pipeline {
 
   def write(msg: Any): Future[Channel]
 
+  def deregister(): Future[Channel]
+
   def flush(): Pipeline
 
   def sendChannelRegistered(): Pipeline
@@ -77,17 +79,21 @@ object Pipeline {
       this
     }
 
+    override def deregister(): Future[Channel] = {
+      tail.deregister()
+    }
+
     override def sendChannelActive(): Unit = {
-      head.apply(head, Active())
+      head.apply(head, In.Active())
     }
 
     override def sendChannelRegistered(): Pipeline = {
-      head.apply(head, Registered())
+      head.apply(head, In.Registered())
       this
     }
 
     override def sendChannelRead(msg: Any): Pipeline = {
-      head.apply(head, ChannelRead(msg))
+      head.apply(head, In.Read(msg))
       this
     }
 
@@ -193,7 +199,7 @@ object Pipeline {
 
     def bind(localAddress: SocketAddress, promise: Promise[Channel]): Future[Channel] = {
       val next = findOutbound()
-      next.handler.apply(next, Bind(localAddress, promise))
+      next.handler.apply(next, Out.Bind(localAddress, promise))
       promise.future
     }
 
@@ -213,12 +219,23 @@ object Pipeline {
       ctx
     }
 
+
+    def deregister(): Future[Channel] = {
+      val next = findOutbound()
+      val executor = next.executor
+      val promise = Promise[Channel]()
+      if (executor.inEventLoop) {
+        next.handler.apply(next, Out.Deregister(promise))
+      }
+      promise.future
+    }
+
     override def send(ev: Event): Unit = {
       ev match {
-        case _: Inbound =>
+        case _: In =>
           val next = findInbound()
           next.handler.apply(next, ev)
-        case _: Outbound =>
+        case _: Out =>
           val next = findOutbound()
           next.handler.apply(next, ev)
         case _ => throw new IllegalStateException(ev.getClass.getName)
@@ -227,7 +244,7 @@ object Pipeline {
 
     override def read(): Context = {
       val next = findOutbound()
-      next.handler.apply(next, Read())
+      next.handler.apply(next, Out.Read())
       this
     }
 
@@ -243,14 +260,23 @@ object Pipeline {
       val next = findOutbound()
       val executor = next.executor
       if (executor.inEventLoop) {
-        next.handler.apply(next, Write(msg, promise))
+        next.handler.apply(next, Out.Write(msg, promise))
       } else {
         ???
       }
       promise.future
     }
 
-    override def flush(): Context = ???
+    override def flush(): Context = {
+      val next = findOutbound()
+      val executor = next.executor
+      if (executor.inEventLoop) {
+        next.handler.apply(next, Out.Flush())
+      } else {
+        ???
+      }
+      this
+    }
 
     override def executor: EventExecutor = pipeline.channel.eventLoop
   }
@@ -269,20 +295,22 @@ object Pipeline {
 
     def apply(ctx: Context, ev: Event): Unit = {
       ev match {
-        case Bind(localAddress, promise) =>
+        case Out.Bind(localAddress, promise) =>
           unsafe.bind(localAddress, promise)
-        case Read() =>
+        case Out.Read() =>
           unsafe.beginRead()
-        case Registered() =>
+        case Out.Write(msg, promise) =>
+          unsafe.write(msg, promise)
+        case Out.Flush() =>
+          unsafe.flush()
+        case Out.Deregister(promise) =>
+          unsafe.deregister(promise)
+        case In.Registered() =>
           pipeline.invokeHandlerAddedIfNeeded()
           ctx.send(ev)
-        case Active() =>
+        case In.Active() =>
           ctx.send(ev)
           channel.read()
-        case Write(msg, promise) =>
-          unsafe.write(msg, promise)
-        case Flush() =>
-          unsafe.flush()
         case _ => ctx.send(ev)
       }
     }
@@ -297,9 +325,9 @@ object Pipeline {
 
     override def apply(ctx: Context, ev: Event): Unit = {
       ev match {
-        case ChannelRead(msg) =>
+        case In.Read(msg) =>
           log.warn(s"Discarded inbound message $msg that reached at the tail of the pipeline. ")
-        case _: Inbound =>
+        case _: In =>
         case _ => ctx.send(ev)
       }
     }

@@ -2,6 +2,7 @@ package flame
 
 import java.nio.channels.spi.SelectorProvider
 import java.nio.channels.{SelectionKey, Selector}
+import java.util.concurrent.atomic.{AtomicIntegerFieldUpdater, AtomicReferenceFieldUpdater}
 import java.util.concurrent.{Executor, LinkedBlockingQueue}
 import java.util.{Set => JSet}
 
@@ -18,6 +19,11 @@ trait EventLoop extends EventExecutor with EventLoopGroup {
 
 class NioEventLoop(val parent: EventLoopGroup,
                    selectorProvider: SelectorProvider, executor: Executor) extends EventLoop {
+
+  private val stateUpdater = AtomicIntegerFieldUpdater.newUpdater(classOf[NioEventLoop], "state")
+
+  @volatile
+  private var state = 1
 
   private val taskQueue = new LinkedBlockingQueue[Runnable](10)
 
@@ -39,16 +45,25 @@ class NioEventLoop(val parent: EventLoopGroup,
     promise.future
   }
 
-  override def inEventLoop: Boolean = {
+  def inEventLoop: Boolean = {
     Thread.currentThread() == thread
   }
 
   override def execute(task: Runnable): Unit = {
     taskQueue.add(task)
     if (!inEventLoop) {
-      executor.execute { () =>
-        thread = Thread.currentThread()
-        run()
+      startThread()
+    }
+  }
+
+  private def startThread(): Unit = {
+    if (state == 1) {
+      if (stateUpdater.compareAndSet(this, 1, 2)) {
+        assert(thread == null)
+        executor.execute { () =>
+          thread = Thread.currentThread()
+          run()
+        }
       }
     }
   }
@@ -90,6 +105,10 @@ class NioEventLoop(val parent: EventLoopGroup,
         serverChannel.unsafe.read()
       }
     }
+  }
+
+  def cancel(key: SelectionKey): Unit = {
+    key.cancel()
   }
 
 }
