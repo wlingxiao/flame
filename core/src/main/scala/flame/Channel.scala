@@ -96,8 +96,6 @@ trait NioChannel extends Channel {
     pipeline.deregister()
   }
 
-  def unsafe: Unsafe
-
   protected abstract class AbstractUnsafe extends Unsafe {
 
     private val writeBuffer = ByteBuffer.allocate(1024)
@@ -150,8 +148,6 @@ trait NioChannel extends Channel {
         selectionKey.interestOps(interestOps | readInterestOp)
       }
     }
-
-    def read(): Unit
 
     def write(msg: Any, promise: Promise[Channel]): Unit = {
       assertInEventLoop()

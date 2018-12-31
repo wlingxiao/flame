@@ -7,7 +7,7 @@ import flame.logging.Logging
 import scala.annotation.tailrec
 import scala.concurrent.{Future, Promise}
 
-trait Pipeline extends InboundInvoker with OutboundInvoker {
+trait Pipeline extends OutboundInvoker {
 
   def channel: Channel
 
@@ -19,7 +19,7 @@ trait Pipeline extends InboundInvoker with OutboundInvoker {
 
   def sendChannelRead(msg: Any): Pipeline
 
-  def sendChannelReadComplete(): Unit
+  def sendChannelReadComplete(): Pipeline
 
 }
 
@@ -43,17 +43,38 @@ object Pipeline {
     tail.prev = head
 
     def append(handler: Handler): Pipeline = {
-      val newCtx = newContext(handler)
-      val prev = tail.prev
-      newCtx.prev = prev
-      newCtx.next = tail
-      prev.next = newCtx
-      tail.prev = newCtx
-      if (!registered) {
-        newCtx.setAddPending()
-        callHandlerCallbackLater(newCtx, added = true)
+      synchronized {
+        val newCtx = newContext(handler)
+        val prev = tail.prev
+        newCtx.prev = prev
+        newCtx.next = tail
+        prev.next = newCtx
+        tail.prev = newCtx
+        if (!registered) {
+          newCtx.setAddPending()
+          callHandlerCallbackLater(newCtx, added = true)
+        } else {
+          val executor = newCtx.executor
+          if (!executor.inEventLoop) {
+            newCtx.setAddPending()
+            executor.execute { () =>
+              sendHandlerAdded(newCtx)
+            }
+          } else {
+            sendHandlerAdded(newCtx)
+          }
+        }
       }
       this
+    }
+
+    def sendHandlerAdded(newCtx: AbstractContext): Unit = {
+      newCtx.setAddComplete()
+      val receive = newCtx.handler.receive(newCtx)
+      val added = HandlerAdded()
+      if (receive.isDefinedAt(added)) {
+        receive(added)
+      }
     }
 
     def bind(localAddress: SocketAddress): Future[Channel] = {
@@ -107,8 +128,9 @@ object Pipeline {
       this
     }
 
-    def sendChannelReadComplete(): Unit = {
-
+    def sendChannelReadComplete(): Pipeline = {
+      head.receive(head)(Inbound.ReadComplete())
+      this
     }
 
     private def newContext(handler: Handler): AbstractContext = {
@@ -146,15 +168,6 @@ object Pipeline {
       }
 
     }
-
-    def callHandlerAdded0(ctx: AbstractContext): Unit = {
-      ctx.setAddComplete()
-      val added = HandlerAdded()
-      val receive = ctx.handler.receive(ctx)
-      if (receive.isDefinedAt(added)) {
-        receive(added)
-      }
-    }
   }
 
   object HandlerState {
@@ -174,14 +187,14 @@ object Pipeline {
     override def execute(): Unit = {
       val executor = ctx.executor
       if (executor.inEventLoop) {
-        pipeline.callHandlerAdded0(ctx)
+        pipeline.sendHandlerAdded(ctx)
       } else {
         executor.execute(this)
       }
     }
 
     override def run(): Unit = {
-      pipeline.callHandlerAdded0(ctx)
+      pipeline.sendHandlerAdded(ctx)
     }
   }
 
@@ -243,18 +256,16 @@ object Pipeline {
       go(next, fn)
     }
 
-    override def send(ev: Event): Unit = {
-      ev match {
-        case in: Inbound =>
-          invokeInbound(_ => in)
-        case out: Outbound =>
-          invokeOutbound(_ => out)
-        case _ => throw new IllegalStateException(ev.getClass.getName)
-      }
+    def send(in: Inbound): Unit = {
+      invokeInbound(_ => in)
+    }
+
+    def send(out: Outbound): Unit = {
+      invokeOutbound(_ => out)
     }
 
     def read(): this.type = {
-      invokeOutbound(_ => Outbound.Read())
+      send(Outbound.Read())
       this
     }
 
@@ -267,12 +278,12 @@ object Pipeline {
     }
 
     def write(msg: Any, promise: Promise[Channel]): Future[Channel] = {
-      invokeOutbound(_ => Outbound.Write(msg, promise))
+      send(Outbound.Write(msg, promise))
       promise.future
     }
 
     def flush(): this.type = {
-      invokeOutbound(_ => Outbound.Flush())
+      send(Outbound.Flush())
       this
     }
 
@@ -330,7 +341,10 @@ object Pipeline {
       case ev@Inbound.Active() =>
         ctx.send(ev)
         channel.read()
-      case ev: Event => ctx.send(ev)
+      case in: Inbound =>
+        ctx.send(in)
+      case out: Outbound =>
+        throw new AssertionError(out.getClass.getName)
     }
 
   }

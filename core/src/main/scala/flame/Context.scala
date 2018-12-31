@@ -14,6 +14,4 @@ trait Context extends InboundInvoker with OutboundInvoker {
 
   def executor: EventExecutor
 
-  def send(ev: Event): Unit
-
 }

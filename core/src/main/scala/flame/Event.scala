@@ -12,6 +12,8 @@ trait Outbound extends Event
 
 case class HandlerAdded() extends Event
 
+case class HandlerRemoved() extends Event
+
 object Inbound {
 
   /**
