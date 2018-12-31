@@ -7,21 +7,11 @@ import flame.logging.Logging
 import scala.annotation.tailrec
 import scala.concurrent.{Future, Promise}
 
-trait Pipeline {
+trait Pipeline extends InboundInvoker with OutboundInvoker {
 
   def channel: Channel
 
   def append(handler: Handler): Pipeline
-
-  def bind(localAddress: SocketAddress): Unit
-
-  def read(): Pipeline
-
-  def write(msg: Any): Future[Channel]
-
-  def deregister(): Future[Channel]
-
-  def flush(): Pipeline
 
   def sendChannelRegistered(): Pipeline
 
@@ -39,9 +29,9 @@ object Pipeline {
 
   class Impl(val channel: Channel) extends Pipeline {
 
-    private val head: HeadContext = HeadContext(this)
+    private val head: HeadContext = new HeadContext(this)
 
-    private val tail: TailContext = TailContext(this)
+    private val tail: TailContext = new TailContext(this)
 
     private var firstRegistration = true
 
@@ -52,7 +42,7 @@ object Pipeline {
     head.next = tail
     tail.prev = head
 
-    override def append(handler: Handler): Pipeline = {
+    def append(handler: Handler): Pipeline = {
       val newCtx = newContext(handler)
       val prev = tail.prev
       newCtx.prev = prev
@@ -66,38 +56,58 @@ object Pipeline {
       this
     }
 
-    override def bind(localAddress: SocketAddress): Unit = {
+    def bind(localAddress: SocketAddress): Future[Channel] = {
       tail.bind(localAddress)
     }
 
-    override def write(msg: Any): Future[Channel] = {
+    def bind(socketAddress: SocketAddress, promise: Promise[Channel]): Future[Channel] = {
+      tail.bind(socketAddress, promise)
+    }
+
+    def write(msg: Any): Future[Channel] = {
       tail.write(msg)
     }
 
-    override def flush(): Pipeline = {
+    def write(msg: Any, promise: Promise[Channel]): Future[Channel] = {
+      tail.write(msg, promise)
+    }
+
+    def close(): Future[Channel] = {
+      tail.close()
+    }
+
+    def close(promise: Promise[Channel]): Future[Channel] = {
+      tail.close(promise)
+    }
+
+    def flush(): this.type = {
       tail.flush()
       this
     }
 
-    override def deregister(): Future[Channel] = {
+    def deregister(): Future[Channel] = {
       tail.deregister()
     }
 
-    override def sendChannelActive(): Unit = {
+    def deregister(promise: Promise[Channel]): Future[Channel] = {
+      tail.deregister(promise)
+    }
+
+    def sendChannelActive(): Unit = {
       head.receive(head)(Inbound.Active())
     }
 
-    override def sendChannelRegistered(): Pipeline = {
+    def sendChannelRegistered(): Pipeline = {
       head.receive(head)(Inbound.Registered())
       this
     }
 
-    override def sendChannelRead(msg: Any): Pipeline = {
+    def sendChannelRead(msg: Any): Pipeline = {
       head.receive(head)(Inbound.Read(msg))
       this
     }
 
-    override def sendChannelReadComplete(): Unit = {
+    def sendChannelReadComplete(): Unit = {
 
     }
 
@@ -105,7 +115,7 @@ object Pipeline {
       ContextImpl(handler.getClass.getSimpleName, this, handler)
     }
 
-    override def read(): Pipeline = {
+    def read(): this.type = {
       tail.read()
       this
     }
@@ -193,7 +203,7 @@ object Pipeline {
     }
 
     def bind(socketAddress: SocketAddress): Future[Channel] = {
-      bind(socketAddress, Promise[Channel]())
+      bind(socketAddress, Promise())
     }
 
     def bind(localAddress: SocketAddress, promise: Promise[Channel]): Future[Channel] = {
@@ -205,9 +215,12 @@ object Pipeline {
       @tailrec
       def go(ctx: AbstractContext, fn: AbstractContext => Outbound): Unit = {
         val receive = ctx.handler.receive(ctx)
-        val ev = fn(ctx)
-        if (receive.isDefinedAt(ev)) {
-          receive(ev)
+        val out = fn(ctx)
+        if (receive.isDefinedAt(out)) {
+          val executor = ctx.executor
+          if (!executor.inEventLoop) {
+            executor.execute(() => receive(out))
+          } else receive(out)
         } else go(ctx.prev, fn)
       }
 
@@ -218,24 +231,16 @@ object Pipeline {
       @tailrec
       def go(ctx: AbstractContext, fn: AbstractContext => Inbound): Unit = {
         val receive = ctx.handler.receive(ctx)
-        val ev = fn(ctx)
-        if (receive.isDefinedAt(ev)) {
-          receive(ev)
+        val in = fn(ctx)
+        if (receive.isDefinedAt(in)) {
+          val executor = ctx.executor
+          if (!executor.inEventLoop) {
+            executor.execute(() => receive(in))
+          } else receive(in)
         } else go(ctx.next, fn)
       }
 
       go(next, fn)
-    }
-
-    def deregister(): Future[Channel] = {
-      ???
-      /*val next = findOutbound()
-      val executor = next.executor
-      val promise = Promise[Channel]()
-      if (executor.inEventLoop) {
-        next.handler.apply(next, Outbound.Deregister(promise))
-      }
-      promise.future*/
     }
 
     override def send(ev: Event): Unit = {
@@ -248,7 +253,7 @@ object Pipeline {
       }
     }
 
-    override def read(): Context = {
+    def read(): this.type = {
       invokeOutbound(_ => Outbound.Read())
       this
     }
@@ -257,30 +262,53 @@ object Pipeline {
       name
     }
 
-    override def write(msg: Any): Future[Channel] = {
-      write(msg, Promise[Channel]())
+    def write(msg: Any): Future[Channel] = {
+      write(msg, Promise())
     }
 
-    override def write(msg: Any, promise: Promise[Channel]): Future[Channel] = {
+    def write(msg: Any, promise: Promise[Channel]): Future[Channel] = {
       invokeOutbound(_ => Outbound.Write(msg, promise))
       promise.future
     }
 
-    override def flush(): Context = {
+    def flush(): this.type = {
       invokeOutbound(_ => Outbound.Flush())
       this
     }
 
-    override def executor: EventExecutor = pipeline.channel.eventLoop
+    def executor: EventExecutor = pipeline.channel.eventLoop
+
+    def close(): Future[Channel] = {
+      close(Promise[Channel]())
+    }
+
+    def close(promise: Promise[Channel]): Future[Channel] = {
+      invokeOutbound(_ => Outbound.Close(promise))
+      promise.future
+    }
+
+    def deregister(promise: Promise[Channel]): Future[Channel] = {
+      invokeOutbound(_ => Outbound.Deregister(promise))
+      promise.future
+    }
+
+    def deregister(): Future[Channel] = {
+      deregister(Promise())
+    }
+
   }
 
-  case class HeadContext(pipeline: Pipeline.Impl, name: String = "HEAD") extends AbstractContext with Handler {
+  class HeadContext(val pipeline: Pipeline.Impl, val name: String = "HEAD") extends AbstractContext with Handler {
 
     private val unsafe = pipeline.channel.unsafe
 
     override def handler: Handler = this
 
     def receive(ctx: Context): Receive = {
+      handleOutbound.orElse(handleInbound(ctx))
+    }
+
+    private def handleOutbound: PartialFunction[Event, Unit] = {
       case Outbound.Bind(localAddress, promise) =>
         unsafe.bind(localAddress, promise)
       case Outbound.Read() =>
@@ -291,20 +319,23 @@ object Pipeline {
         unsafe.flush()
       case Outbound.Deregister(promise) =>
         unsafe.deregister(promise)
+      case Outbound.Close(promise) =>
+        unsafe.close(promise)
+    }
+
+    private def handleInbound(ctx: Context): PartialFunction[Event, Unit] = {
       case ev@Inbound.Registered() =>
         pipeline.invokeHandlerAddedIfNeeded()
         ctx.send(ev)
       case ev@Inbound.Active() =>
         ctx.send(ev)
         channel.read()
-      case ev: Event =>
-        ctx.send(ev)
+      case ev: Event => ctx.send(ev)
     }
 
-    override def flush(): Context = super.flush()
   }
 
-  case class TailContext(pipeline: Pipeline, name: String = "TAIL") extends AbstractContext with Handler with Logging {
+  class TailContext(val pipeline: Pipeline, val name: String = "TAIL") extends AbstractContext with Handler with Logging {
     override def handler: Handler = {
       this
     }
@@ -318,7 +349,6 @@ object Pipeline {
 
   case class ContextImpl(name: String,
                          pipeline: Pipeline.Impl,
-                         handler: Handler) extends AbstractContext {
-  }
+                         handler: Handler) extends AbstractContext
 
 }

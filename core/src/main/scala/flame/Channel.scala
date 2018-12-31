@@ -9,7 +9,21 @@ import scala.collection.mutable.ArrayBuffer
 import scala.concurrent.{Future, Promise}
 import scala.util.Try
 
-abstract class Channel(parent: Channel) {
+trait Channel extends OutboundInvoker {
+  def parent: Channel
+
+  def eventLoop: EventLoop
+
+  def isOpen: Boolean
+
+  def isActive: Boolean
+
+  def pipeline: Pipeline
+
+  private[flame] def unsafe: Unsafe
+}
+
+trait NioChannel extends Channel {
 
   private val _pipeline = newPipeline
 
@@ -36,19 +50,27 @@ abstract class Channel(parent: Channel) {
     javaChannel.isOpen
   }
 
-  def isActive: Boolean
-
-  def close(promise: Promise[Channel]): Unit
-
   protected def newPipeline: Pipeline = {
     Pipeline(this)
   }
 
-  def bind(localAddress: SocketAddress): Unit = {
+  def bind(localAddress: SocketAddress): Future[Channel] = {
     pipeline.bind(localAddress)
   }
 
-  def read(): Channel = {
+  def bind(socketAddress: SocketAddress, promise: Promise[Channel]): Future[Channel] = {
+    pipeline.bind(socketAddress, promise)
+  }
+
+  def close(): Future[Channel] = {
+    pipeline.close()
+  }
+
+  def close(promise: Promise[Channel]): Future[Channel] = {
+    pipeline.close(promise)
+  }
+
+  def read(): this.type = {
     pipeline.read()
     this
   }
@@ -57,30 +79,45 @@ abstract class Channel(parent: Channel) {
     pipeline.write(msg)
   }
 
-  def flush(): Channel = {
+  def write(msg: Any, promise: Promise[Channel]): Future[Channel] = {
+    pipeline.write(msg)
+  }
+
+  def flush(): this.type = {
     pipeline.flush()
     this
+  }
+
+  def deregister(promise: Promise[Channel]): Future[Channel] = {
+    pipeline.deregister(promise)
   }
 
   def deregister(): Future[Channel] = {
     pipeline.deregister()
   }
 
-  def unsafe: Unsafe = new AbstractUnsafe
+  def unsafe: Unsafe
 
-  class AbstractUnsafe extends Unsafe {
+  protected abstract class AbstractUnsafe extends Unsafe {
 
     private val writeBuffer = ByteBuffer.allocate(1024)
 
+    private def assertInEventLoop(): Unit = {
+      assert(eventLoop.inEventLoop)
+    }
+
     def bind(localAddress: SocketAddress, promise: Promise[Channel]): Unit = {
+      assertInEventLoop()
       promise.complete(Try {
         doBind(localAddress)
-        Channel.this
+        NioChannel.this
       })
     }
 
+    protected def doBind(localAddress: SocketAddress): Unit
+
     def register(eventLoop: EventLoop, promise: Promise[Channel]): Unit = {
-      Channel.this.register(eventLoop)
+      NioChannel.this.register(eventLoop)
       if (eventLoop.inEventLoop) {
         register(promise)
       } else {
@@ -92,23 +129,32 @@ abstract class Channel(parent: Channel) {
 
     private def register(promise: Promise[Channel]): Unit = {
       promise.complete(Try {
-        selectionKey = javaChannel.register(eventLoop.asInstanceOf[NioEventLoop].selector, 0, Channel.this)
+        selectionKey = javaChannel.register(eventLoop.asInstanceOf[NioEventLoop].selector, 0, NioChannel.this)
         pipeline.sendChannelRegistered()
         pipeline.sendChannelActive()
-        Channel.this
+        NioChannel.this
       })
     }
 
     def beginRead(): Unit = {
-      assert(eventLoop.inEventLoop)
+      assertInEventLoop()
       doBeginRead()
     }
 
-    def read(): Unit = {
-      doRead()
+    protected def doBeginRead(): Unit = {
+      if (!selectionKey.isValid) {
+        return
+      }
+      val interestOps = selectionKey.interestOps
+      if ((interestOps & readInterestOp) == 0) {
+        selectionKey.interestOps(interestOps | readInterestOp)
+      }
     }
 
+    def read(): Unit
+
     def write(msg: Any, promise: Promise[Channel]): Unit = {
+      assertInEventLoop()
       msg match {
         case buf: ByteBuffer =>
           writeBuffer.put(buf)
@@ -117,49 +163,37 @@ abstract class Channel(parent: Channel) {
     }
 
     def flush(): Unit = {
+      assertInEventLoop()
       writeBuffer.flip()
-      doWrite(writeBuffer)
+      doFlush(writeBuffer)
       writeBuffer.clear()
     }
 
-    override def close(promise: Promise[Channel]): Unit = {
+    def doFlush(out: ByteBuffer): Unit
+
+    def close(promise: Promise[Channel]): Unit = {
+      assertInEventLoop()
       promise.complete(Try {
         javaChannel.close()
-        Channel.this
+        NioChannel.this
       })
     }
 
     override def deregister(promise: Promise[Channel]): Unit = {
-      assert(eventLoop.inEventLoop)
+      assertInEventLoop()
       eventLoop.execute { () =>
         doDeregister()
       }
     }
-  }
 
-  protected def doBind(localAddress: SocketAddress): Unit
-
-  protected def doBeginRead(): Unit = {
-    if (!selectionKey.isValid) {
-      return
+    protected def doDeregister(): Unit = {
+      eventLoop.asInstanceOf[NioEventLoop].cancel(selectionKey)
     }
-    val interestOps = selectionKey.interestOps
-    if ((interestOps & readInterestOp) == 0) {
-      selectionKey.interestOps(interestOps | readInterestOp)
-    }
-  }
-
-  protected def doRead(): Unit
-
-  protected def doWrite(out: ByteBuffer): Unit
-
-  protected def doDeregister(): Unit = {
-    eventLoop.asInstanceOf[NioEventLoop].cancel(selectionKey)
   }
 
 }
 
-class NioSocketChannel(parent: Channel, ch: SocketChannel) extends Channel(null) {
+class NioSocketChannel(val parent: Channel, ch: SocketChannel) extends NioChannel {
 
   private val bufferSize = 2
 
@@ -168,46 +202,48 @@ class NioSocketChannel(parent: Channel, ch: SocketChannel) extends Channel(null)
   @volatile
   protected var selectionKey: SelectionKey = _
 
-  override def isActive: Boolean = {
+  def isActive: Boolean = {
     ch.isOpen && ch.isConnected
   }
 
-  override def javaChannel: SelectableChannel = ch
-
-  override def close(promise: Promise[Channel]): Unit = {
-    ch.close()
-  }
-
-  override def bind(localAddress: SocketAddress): Unit = {
-    ch.bind(localAddress)
-  }
+  def javaChannel: SelectableChannel = ch
 
   val readInterestOp: Int = SelectionKey.OP_READ
 
-  override def doBind(localAddress: SocketAddress): Unit = ???
+  def unsafe: Unsafe = new NioUnsafe
 
-  def doRead(): Unit = {
-    var count: Int = -1
-    do {
-      val buf = ByteBuffer.allocateDirect(bufferSize)
-      count = ch.read(buf)
-      if (count != -1 && count != 0) {
-        buf.flip()
-        pipeline.sendChannelRead(buf)
+  class NioUnsafe extends AbstractUnsafe {
+    def doBind(localAddress: SocketAddress): Unit = {
+      javaChannel.asInstanceOf[SocketChannel].bind(localAddress)
+    }
+
+    def doFlush(out: ByteBuffer): Unit = {
+      ch.write(out)
+    }
+
+    def read(): Unit = {
+      var count: Int = -1
+      do {
+        val buf = ByteBuffer.allocateDirect(bufferSize)
+        count = ch.read(buf)
+        if (count != -1 && count != 0) {
+          buf.flip()
+          pipeline.sendChannelRead(buf)
+        }
+      } while (count != -1 && count != 0)
+      pipeline.sendChannelReadComplete()
+      if (count < 0) {
+        unsafe.close(Promise[Channel]())
       }
-    } while (count != -1 && count != 0)
-    pipeline.sendChannelReadComplete()
-    if (count < 0) {
-      unsafe.close(Promise[Channel]())
     }
   }
 
-  override def doWrite(out: ByteBuffer): Unit = {
-    ch.write(out)
-  }
 }
 
-class NioServerSocketChannel extends Channel(null) {
+class NioServerSocketChannel extends NioChannel {
+
+  override def parent: Channel = null
+
   private val ch = SelectorProvider.provider.openServerSocketChannel()
   ch.configureBlocking(false)
 
@@ -222,34 +258,36 @@ class NioServerSocketChannel extends Channel(null) {
     ch.socket().isBound
   }
 
-  def close(promise: Promise[Channel]): Unit = {
-    ch.close()
-  }
-
-  def doBind(localAddress: SocketAddress): Unit = {
-    javaChannel.bind(localAddress)
-  }
-
-  def doReadMessages(buf: ArrayBuffer[Any]): Int = {
-    val socketChannel = ch.accept()
-    buf += new NioSocketChannel(this, socketChannel)
-    1
-  }
-
   val readInterestOp: Int = SelectionKey.OP_ACCEPT
 
-  def doRead(): Unit = {
-    assert(eventLoop.inEventLoop)
-    val readBuf = ArrayBuffer[Any]()
-    do {
-      doReadMessages(readBuf)
-    } while (false)
-    readBuf.foreach { buf =>
-      pipeline.sendChannelRead(buf)
+  override def unsafe: Unsafe = new NioServerUnsafe
+
+  private class NioServerUnsafe extends AbstractUnsafe {
+
+    def doBind(localAddress: SocketAddress): Unit = {
+      javaChannel.bind(localAddress)
     }
-    readBuf.clear()
-    pipeline.sendChannelReadComplete()
+
+    def read(): Unit = {
+      assert(eventLoop.inEventLoop)
+      val readBuf = ArrayBuffer[Any]()
+      do {
+        doReadMessages(readBuf)
+      } while (false)
+      readBuf.foreach { buf =>
+        pipeline.sendChannelRead(buf)
+      }
+      readBuf.clear()
+      pipeline.sendChannelReadComplete()
+    }
+
+    def doReadMessages(buf: ArrayBuffer[Any]): Int = {
+      val socketChannel = ch.accept()
+      buf += new NioSocketChannel(NioServerSocketChannel.this, socketChannel)
+      1
+    }
+
+    def doFlush(out: ByteBuffer): Unit = ???
   }
 
-  def doWrite(out: ByteBuffer): Unit = ???
 }

@@ -1,0 +1,5 @@
+package flame
+
+trait InboundInvoker {
+
+}
