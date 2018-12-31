@@ -1,10 +1,7 @@
 package flame
 
-import java.net.SocketAddress
+trait Handler {
+  type Receive = PartialFunction[Event, Unit]
 
-import scala.concurrent.Promise
-
-trait Handler extends ((Context, Event) => Unit) {
-
-  def apply(ctx: Context, ev: Event): Unit
+  def receive(ctx: Context): Receive
 }

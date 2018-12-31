@@ -58,13 +58,11 @@ class Bootstrap {
 }
 
 class ServerBootstrapAcceptor(ch: Channel, childGroup: EventLoopGroup, childHandler: Handler) extends Handler {
-  def apply(ctx: Context, ev: Event): Unit = {
-    ev match {
-      case In.Read(msg) =>
-        val channel = msg.asInstanceOf[Channel]
-        channel.pipeline.append(childHandler)
-        childGroup.register(channel)
-      case _ => ctx.send(ev)
-    }
+
+  def receive(ctx: Context): Receive = {
+    case Inbound.Read(msg) =>
+      val channel = msg.asInstanceOf[Channel]
+      channel.pipeline.append(childHandler)
+      childGroup.register(channel)
   }
 }
