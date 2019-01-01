@@ -21,3 +21,12 @@ lazy val core = Project(id = "flame-core", base = file("core"))
     logbackClassic % Test,
     scalatest % Test,
   ))
+
+lazy val http = Project(id = "flame-http", base = file("http"))
+  .settings(commonSettings)
+  .settings(libraryDependencies ++= Seq(
+    slf4jApi,
+
+    logbackClassic % Test,
+    scalatest % Test,
+  )).dependsOn(core)
