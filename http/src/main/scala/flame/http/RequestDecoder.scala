@@ -7,7 +7,6 @@ import flame.util.BufferUtils
 
 class RequestDecoder extends Handler {
 
-
   def receive(ctx: Context): Receive = {
     case read@Inbound.Read(msg) =>
       msg match {
@@ -23,7 +22,6 @@ class RequestDecoder extends Handler {
 
   private[this] var body: ByteBuffer = _
 
-
   def decode(ctx: Context, in: ByteBuffer): Unit = {
     buffered = BufferUtils.concatBuffers(buffered, in)
     if (parser.parsePrelude(buffered)) {
@@ -34,24 +32,10 @@ class RequestDecoder extends Handler {
       }
       if (parser.contentComplete) {
         val request = parser.getRequestPrelude.copy(body = body)
+        reset()
+        ctx.send(Inbound.Read(request))
       }
     }
-  }
-
-
-  private def readAndGetRequest(ctx: Context, msg: ByteBuffer): Request = {
-    buffered = BufferUtils.concatBuffers(buffered, msg)
-    maybeGetRequest(ctx, msg)
-  }
-
-  private def maybeGetRequest(ctx: Context, in: ByteBuffer): Request = {
-    if (parser.parsePrelude(in)) {
-      val body = parseBody(in)
-      if (parser.contentComplete) {
-        val request = parser.getRequestPrelude
-        request.copy(body = body)
-      } else null
-    } else null
   }
 
   private def parseBody(in: ByteBuffer): ByteBuffer = {
@@ -61,4 +45,9 @@ class RequestDecoder extends Handler {
     }
   }
 
+  private def reset(): Unit = {
+    buffered = BufferUtils.emptyBuffer
+    body = null
+    parser.reset()
+  }
 }
