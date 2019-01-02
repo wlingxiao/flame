@@ -119,9 +119,7 @@ trait NioChannel extends Channel {
       if (eventLoop.inEventLoop) {
         register(promise)
       } else {
-        eventLoop.execute { () =>
-          register(promise)
-        }
+        eventLoop(register(promise))
       }
     }
 
@@ -177,9 +175,7 @@ trait NioChannel extends Channel {
 
     override def deregister(promise: Promise[Channel]): Unit = {
       assertInEventLoop()
-      eventLoop.execute { () =>
-        doDeregister()
-      }
+      eventLoop(doDeregister())
     }
 
     protected def doDeregister(): Unit = {

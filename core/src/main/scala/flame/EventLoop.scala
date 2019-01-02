@@ -8,6 +8,7 @@ import java.util.{Set => JSet}
 
 import scala.annotation.tailrec
 import scala.concurrent.{Future, Promise}
+import scala.util.Try
 
 
 trait EventLoop extends EventExecutor with EventLoopGroup {
@@ -49,7 +50,14 @@ class NioEventLoop(val parent: EventLoopGroup,
     Thread.currentThread() == thread
   }
 
-  override def execute(task: Runnable): Unit = {
+
+  def apply[T](task: => T): Future[T] = {
+    val promise = Promise[T]()
+    execute { () => promise.tryComplete(Try(task)) }
+    promise.future
+  }
+
+  def execute(task: Runnable): Unit = {
     taskQueue.add(task)
     if (!inEventLoop) {
       startThread()

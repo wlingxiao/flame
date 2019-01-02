@@ -6,7 +6,7 @@ import java.util.concurrent.atomic.AtomicInteger
 
 import scala.concurrent.{Future, Promise}
 
-trait EventLoopGroup {
+trait EventLoopGroup extends EventExecutorGroup {
 
   def next: EventLoop
 
@@ -50,4 +50,7 @@ class NioEventLoopGroup(nThreads: Int) extends EventLoopGroup {
     new ThreadFactoryImpl(getClass.getSimpleName)
   }
 
+  def apply[T](task: => T): Future[T] = {
+    next(task)
+  }
 }

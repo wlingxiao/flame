@@ -57,9 +57,7 @@ object Pipeline {
           val executor = newCtx.executor
           if (!executor.inEventLoop) {
             newCtx.setAddPending()
-            executor.execute { () =>
-              sendHandlerAdded(newCtx)
-            }
+            executor(sendHandlerAdded(newCtx))
           } else {
             sendHandlerAdded(newCtx)
           }
@@ -189,7 +187,7 @@ object Pipeline {
       if (executor.inEventLoop) {
         pipeline.sendHandlerAdded(ctx)
       } else {
-        executor.execute(this)
+        executor(this)
       }
     }
 
@@ -232,7 +230,7 @@ object Pipeline {
         if (receive.isDefinedAt(out)) {
           val executor = ctx.executor
           if (!executor.inEventLoop) {
-            executor.execute(() => receive(out))
+            executor(receive(out))
           } else receive(out)
         } else go(ctx.prev, fn)
       }
@@ -248,7 +246,7 @@ object Pipeline {
         if (receive.isDefinedAt(in)) {
           val executor = ctx.executor
           if (!executor.inEventLoop) {
-            executor.execute(() => receive(in))
+            executor(receive(in))
           } else receive(in)
         } else go(ctx.next, fn)
       }

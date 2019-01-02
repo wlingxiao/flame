@@ -30,12 +30,8 @@ class Bootstrap {
     import flame.util.Executions._
     val channel = channelFactory()
     initChannel(channel)
-    group.register(channel).onComplete {
-      case Success(ch) =>
-        ch.eventLoop.execute { () =>
-          channel.bind(new InetSocketAddress(inetHost, inetPort))
-        }
-      case _ =>
+    group.register(channel) flatMap { ch =>
+      ch.eventLoop(channel.bind(new InetSocketAddress(inetHost, inetPort)))
     }
   }
 
@@ -44,7 +40,7 @@ class Bootstrap {
     pipeline.append(new Initializer {
       def init(ch: Channel): Unit = {
         val pipeline = ch.pipeline
-        ch.eventLoop.execute { () =>
+        ch.eventLoop {
           pipeline.append(new ServerBootstrapAcceptor(ch, childGroup, _channelHandler))
         }
       }

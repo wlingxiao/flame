@@ -1,9 +1,9 @@
 package flame
 
-import java.util.concurrent.Executor
-
-trait EventExecutor extends Executor with EventExecutorGroup {
+trait EventExecutor extends EventExecutorGroup {
 
   def inEventLoop: Boolean
+
+  def parent: EventExecutorGroup
 
 }
