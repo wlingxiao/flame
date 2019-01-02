@@ -2,93 +2,41 @@ package flame
 
 import java.nio.channels.spi.SelectorProvider
 import java.nio.channels.{SelectionKey, Selector}
-import java.util.concurrent.atomic.{AtomicIntegerFieldUpdater, AtomicReferenceFieldUpdater}
-import java.util.concurrent.{Executor, LinkedBlockingQueue}
+import java.util.concurrent.Executor
 import java.util.{Set => JSet}
 
-import scala.annotation.tailrec
 import scala.concurrent.{Future, Promise}
-import scala.util.Try
 
 
-trait EventLoop extends EventExecutor with EventLoopGroup {
+trait EventLoop extends EventLoopGroup with EventExecutor {
 
   def parent: EventLoopGroup
 
-  def run(): Unit
+}
+
+abstract class SingleThreadEventLoop extends SingleThreadEventExecutor with EventLoop {
+  override def next: EventLoop = {
+    super.next.asInstanceOf[EventLoop]
+  }
 }
 
 class NioEventLoop(val parent: EventLoopGroup,
-                   selectorProvider: SelectorProvider, executor: Executor) extends EventLoop {
-
-  private val stateUpdater = AtomicIntegerFieldUpdater.newUpdater(classOf[NioEventLoop], "state")
-
-  @volatile
-  private var state = 1
-
-  private val taskQueue = new LinkedBlockingQueue[Runnable](10)
-
+                   selectorProvider: SelectorProvider,
+                   val executor: Executor) extends SingleThreadEventLoop {
   val selector: Selector = selectorProvider.openSelector()
 
-  @volatile
-  private var thread: Thread = _
-
-  override def next: EventLoop = {
-    this
-  }
-
-  override def register(channel: Channel): Future[Channel] = {
+  def register(channel: Channel): Future[Channel] = {
     register(channel, Promise[Channel]())
   }
 
-  override def register(channel: Channel, promise: Promise[Channel]): Future[Channel] = {
+  def register(channel: Channel, promise: Promise[Channel]): Future[Channel] = {
     channel.unsafe.register(this, promise)
     promise.future
-  }
-
-  def inEventLoop: Boolean = {
-    Thread.currentThread() == thread
-  }
-
-
-  def apply[T](task: => T): Future[T] = {
-    val promise = Promise[T]()
-    execute { () => promise.tryComplete(Try(task)) }
-    promise.future
-  }
-
-  def execute(task: Runnable): Unit = {
-    taskQueue.add(task)
-    if (!inEventLoop) {
-      startThread()
-    }
-  }
-
-  private def startThread(): Unit = {
-    if (state == 1) {
-      if (stateUpdater.compareAndSet(this, 1, 2)) {
-        assert(thread == null)
-        executor.execute { () =>
-          thread = Thread.currentThread()
-          run()
-        }
-      }
-    }
   }
 
   def run(): Unit = {
     while (true) {
       select()
-    }
-  }
-
-  @tailrec
-  private def runAllTask(): Unit = {
-    assert(inEventLoop)
-    val task = taskQueue.poll()
-    if (task != null) {
-      task.run()
-      runAllTask()
     }
   }
 
